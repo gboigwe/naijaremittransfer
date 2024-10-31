@@ -63,14 +63,18 @@
     (unwrap-panic (element-at sorted-rates mid-index))))
 
 (define-private (sort-rates (rate uint) (sorted-rates (list 150 uint)))
-  (fold insert-rate sorted-rates (list rate)))
+  (insert-rate rate sorted-rates))
 
 (define-private (insert-rate (rate uint) (sorted-rates (list 150 uint)))
-  (let ((index (find-index rate sorted-rates)))
-    (unwrap-panic (as-max-len? (concat (take index sorted-rates) (list rate) (drop index sorted-rates)) u150))))
+  (fold insert-helper sorted-rates (list rate)))
 
-(define-private (find-index (rate uint) (rates (list 150 uint)))
-  (default-to (len rates) (index-of rates rate)))
+(define-private (insert-helper (current uint) (acc (list 150 uint)))
+  (if (and (> (len acc) u0) (< current (unwrap-panic (element-at acc u0))))
+    (unwrap-panic (as-max-len? (concat (list current) acc) u150))
+    (unwrap-panic (as-max-len? (append acc current) u150))))
+
+(define-private (element-at (l (list 150 uint)) (index uint))
+  (ok (unwrap-panic (element-at? l index))))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
