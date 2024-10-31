@@ -13,6 +13,7 @@
 (define-data-var transfer-fee uint u100) ;; 1% transfer fee (in basis points)
 (define-data-var min-rate-providers uint u3) ;; Minimum number of rate providers required
 (define-data-var rate-validity-period uint u3600) ;; Validity period for submitted rates (in seconds)
+(define-data-var rate-provider-count uint u0)
 
 ;; Define maps
 (define-map balances principal uint)
@@ -50,36 +51,26 @@
     (< (- current-time (get timestamp rate)) (var-get rate-validity-period))))
 
 (define-private (get-valid-rates)
-  (fold check-and-add-rate rate-providers (list)))
+  (let ((rates (get-rates u0 (var-get rate-provider-count) (list))))
+    (filter is-valid-rate rates)))
 
-(define-private (check-and-add-rate (provider principal) (is-provider bool) (valid-rates (list 150 {rate: uint, timestamp: uint})))
-  (match (map-get? exchange-rates provider)
-    rate (if (and is-provider (is-valid-rate rate))
-           (unwrap-panic (as-max-len? (append valid-rates rate) u150))
-           valid-rates)
-    valid-rates))
+(define-private (get-rates (index uint) (count uint) (rates (list 150 {rate: uint, timestamp: uint})))
+  (if (>= index count)
+    rates
+    (match (map-get? exchange-rates (unwrap-panic (element-at (to-sequence rate-providers) index)))
+      rate (get-rates (+ index u1) count (unwrap-panic (as-max-len? (append rates rate) u150)))
+      (get-rates (+ index u1) count rates))))
 
 (define-private (get-median-rate (rates (list 150 {rate: uint, timestamp: uint})))
   (let
     (
-      (sorted-rates (fold sort-rates rates (list)))
+      (sorted-rates (sort rate-value-comparator rates))
       (mid-index (/ (len sorted-rates) u2))
     )
     (get rate (unwrap-panic (element-at sorted-rates mid-index)))))
 
-(define-private (sort-rates (rate {rate: uint, timestamp: uint}) (sorted-rates (list 150 {rate: uint, timestamp: uint})))
-  (insert-rate rate sorted-rates))
-
-(define-private (insert-rate (rate {rate: uint, timestamp: uint}) (sorted-rates (list 150 {rate: uint, timestamp: uint})))
-  (fold insert-helper sorted-rates (list rate)))
-
-(define-private (insert-helper (current {rate: uint, timestamp: uint}) (acc (list 150 {rate: uint, timestamp: uint})))
-  (if (and (> (len acc) u0) (< (get rate current) (get rate (unwrap-panic (element-at acc u0)))))
-    (unwrap-panic (as-max-len? (concat (list current) acc) u150))
-    (unwrap-panic (as-max-len? (append acc current) u150))))
-
-(define-private (element-at (l (list 150 {rate: uint, timestamp: uint})) (index uint))
-  (ok (unwrap-panic (element-at? l index))))
+(define-private (rate-value-comparator (a {rate: uint, timestamp: uint}) (b {rate: uint, timestamp: uint}))
+  (< (get rate a) (get rate b)))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
@@ -144,6 +135,7 @@
   (if (is-eq tx-sender contract-owner)
     (begin
       (map-set rate-providers provider true)
+      (var-set rate-provider-count (+ (var-get rate-provider-count) u1))
       (ok true))
     (err err-owner-only)))
 
@@ -152,6 +144,7 @@
     (begin
       (map-delete rate-providers provider)
       (map-delete exchange-rates provider)
+      (var-set rate-provider-count (- (var-get rate-provider-count) u1))
       (ok true))
     (err err-owner-only)))
 
