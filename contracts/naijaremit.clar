@@ -9,6 +9,7 @@
 (define-constant err-invalid-rate (err u104))
 (define-constant err-not-authorized (err u105))
 (define-constant err-empty-rates (err u106))
+(define-constant err-no-rates (err u108))
 
 ;; Data variables
 (define-data-var transfer-fee uint u100) ;; 1% transfer fee (in basis points)
@@ -53,36 +54,37 @@
     (asserts! (> len u0) err-empty-rates)
     (ok (element-at rates mid-index))))
 
-(define-private (is-rate-valid (rate {rate: uint, timestamp: uint}))
-  (let 
-    (
-      (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
-      (time-diff (- current-time (get timestamp rate)))
-    )
-    (< time-diff (var-get rate-validity-period))))
-
 (define-private (get-valid-rates)
-  (let
-    (
-      (all-rates (unwrap-panic (get-all-rates)))
-    )
-    (filter is-rate-valid all-rates)))
+  (filter is-rate-valid (get-all-providers)))
+
+(define-private (get-rate-value (provider principal))
+  (match (map-get? exchange-rates provider)
+    rate-data (get rate rate-data)
+    u0))
 
 (define-private (update-exchange-rate)
   (let
     (
-      (valid-rates (get-valid-rates))
-      (rate-values (map get-rate-value valid-rates))
+      (valid-providers (get-valid-rates))
+      (rate-values (map get-rate-value valid-providers))
     )
     (asserts! (>= (len rate-values) (var-get min-rate-providers)) err-invalid-rate)
     (match (calculate-median rate-values)
-      median (begin
-               (var-set current-exchange-rate median)
-               (ok median))
+      median-ok (match median-ok
+                  median (begin
+                           (var-set current-exchange-rate median)
+                           (ok median))
+                  err-empty-rates)
       error error)))
 
-(define-private (get-rate-value (rate {rate: uint, timestamp: uint}))
-  (get rate rate))
+(define-private (is-rate-valid (provider principal))
+  (match (map-get? exchange-rates provider)
+    rate-data (let 
+                (
+                  (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
+                )
+                (<= (- current-time (get timestamp rate-data)) (var-get rate-validity-period)))
+    false))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
@@ -119,9 +121,12 @@
 (define-public (submit-exchange-rate (rate uint))
   (begin
     (asserts! (is-rate-provider tx-sender) err-not-authorized)
-    (let ((current-time (unwrap-panic (get-block-info? time (- block-height u1)))))
-      (map-set exchange-rates tx-sender {rate: rate, timestamp: current-time})
-      (update-exchange-rate))))
+    (let ((current-time (get-block-info? time (- block-height u1))))
+      (match current-time
+        time (begin
+               (map-set exchange-rates tx-sender {rate: rate, timestamp: time})
+               (update-exchange-rate))
+        err-invalid-rate))))
 
 ;; Admin functions
 (define-public (set-transfer-fee (new-fee uint))
@@ -153,10 +158,10 @@
 
 ;; Utility functions
 (define-read-only (get-all-providers)
-  (ok (filter is-rate-provider (get-all-principals))))
+  (filter is-rate-provider (list contract-owner tx-sender)))
 
 (define-read-only (get-all-rates)
-  (ok (map get-provider-rate (filter is-rate-provider (get-all-principals)))))
+  (map get-provider-rate (filter is-rate-provider (get-all-principals))))
 
 (define-read-only (get-all-principals)
-  (ok (append (list contract-owner) (list tx-sender))))
+  (list contract-owner tx-sender))
