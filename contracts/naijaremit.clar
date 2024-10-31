@@ -13,7 +13,7 @@
 (define-data-var transfer-fee uint u100) ;; 1% transfer fee (in basis points)
 (define-data-var min-rate-providers uint u3) ;; Minimum number of rate providers required
 (define-data-var rate-validity-period uint u3600) ;; Validity period for submitted rates (in seconds)
-(define-data-var rate-provider-count uint u0)
+(define-data-var current-exchange-rate uint u0) ;; Current exchange rate, updated on each submission
 
 ;; Define maps
 (define-map balances principal uint)
@@ -40,37 +40,38 @@
   (map-get? exchange-rates provider))
 
 (define-read-only (get-current-exchange-rate)
-  (let ((valid-rates (get-valid-rates)))
-    (if (>= (len valid-rates) (var-get min-rate-providers))
-      (ok (get-median-rate valid-rates))
-      (err err-invalid-rate))))
+  (ok (var-get current-exchange-rate)))
 
 ;; Private functions
-(define-private (is-valid-rate (rate {rate: uint, timestamp: uint}))
-  (let ((current-time (unwrap-panic (get-block-info? time (- block-height u1)))))
-    (< (- current-time (get timestamp rate)) (var-get rate-validity-period))))
-
-(define-private (get-valid-rates)
-  (let ((rates (get-rates u0 (var-get rate-provider-count) (list))))
-    (filter is-valid-rate rates)))
-
-(define-private (get-rates (index uint) (count uint) (rates (list 150 {rate: uint, timestamp: uint})))
-  (if (>= index count)
-    rates
-    (match (map-get? exchange-rates (unwrap-panic (element-at (to-sequence rate-providers) index)))
-      rate (get-rates (+ index u1) count (unwrap-panic (as-max-len? (append rates rate) u150)))
-      (get-rates (+ index u1) count rates))))
-
-(define-private (get-median-rate (rates (list 150 {rate: uint, timestamp: uint})))
+(define-private (calculate-median (rates (list 150 uint)))
   (let
     (
-      (sorted-rates (sort rate-value-comparator rates))
-      (mid-index (/ (len sorted-rates) u2))
+      (sorted-rates (sort < rates))
+      (len (len rates))
+      (mid-index (/ len u2))
     )
-    (get rate (unwrap-panic (element-at sorted-rates mid-index)))))
+    (if (is-eq (mod len u2) u0)
+      (/ (+ (unwrap-panic (element-at sorted-rates mid-index))
+            (unwrap-panic (element-at sorted-rates (- mid-index u1))))
+         u2)
+      (unwrap-panic (element-at sorted-rates mid-index)))))
 
-(define-private (rate-value-comparator (a {rate: uint, timestamp: uint}) (b {rate: uint, timestamp: uint}))
-  (< (get rate a) (get rate b)))
+(define-private (update-exchange-rate)
+  (let
+    (
+      (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
+      (valid-rates (filter
+        (lambda (rate)
+          (< (- current-time (get timestamp rate))
+             (var-get rate-validity-period)))
+        (map unwrap-panic (map get-provider-rate (map-to-list rate-providers)))))
+    )
+    (if (>= (len valid-rates) (var-get min-rate-providers))
+      (let
+        ((median-rate (calculate-median (map get rate valid-rates))))
+        (var-set current-exchange-rate median-rate)
+        (ok median-rate))
+      (err err-invalid-rate))))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
@@ -92,7 +93,7 @@
       (sender-balance (get-balance tx-sender))
       (fee (/ (* amount-stx (var-get transfer-fee)) u10000))
       (total-amount (+ amount-stx fee))
-      (exchange-rate (unwrap! (get-current-exchange-rate) err-invalid-rate))
+      (exchange-rate (unwrap! (update-exchange-rate) err-invalid-rate))
       (naira-amount (/ (* amount-stx exchange-rate) u10000))
     )
     (if (<= total-amount sender-balance)
@@ -120,7 +121,7 @@
     (let ((current-time (unwrap-panic (get-block-info? time (- block-height u1)))))
       (begin
         (map-set exchange-rates tx-sender {rate: rate, timestamp: current-time})
-        (ok true)))
+        (update-exchange-rate)))
     (err err-not-authorized)))
 
 ;; Admin functions
@@ -135,7 +136,6 @@
   (if (is-eq tx-sender contract-owner)
     (begin
       (map-set rate-providers provider true)
-      (var-set rate-provider-count (+ (var-get rate-provider-count) u1))
       (ok true))
     (err err-owner-only)))
 
@@ -144,8 +144,7 @@
     (begin
       (map-delete rate-providers provider)
       (map-delete exchange-rates provider)
-      (var-set rate-provider-count (- (var-get rate-provider-count) u1))
-      (ok true))
+      (update-exchange-rate))
     (err err-owner-only)))
 
 (define-public (set-min-rate-providers (new-min uint))
