@@ -39,25 +39,38 @@
   (map-get? exchange-rates provider))
 
 (define-read-only (get-current-exchange-rate)
-  (let ((valid-rates (filter is-valid-rate (map-to-list exchange-rates))))
+  (let ((valid-rates (fold get-valid-rates exchange-rates (list))))
     (if (>= (len valid-rates) (var-get min-rate-providers))
       (ok (get-median-rate valid-rates))
       (err err-invalid-rate))))
 
 ;; Private functions
-(define-private (is-valid-rate (rate {provider: principal, rate: {rate: uint, timestamp: uint}}))
+(define-private (is-valid-rate (rate {rate: uint, timestamp: uint}))
   (let ((current-time (unwrap-panic (get-block-info? time (- block-height u1)))))
-    (< (- current-time (get timestamp (get rate rate))) (var-get rate-validity-period))))
+    (< (- current-time (get timestamp rate)) (var-get rate-validity-period))))
 
-(define-private (get-median-rate (rates (list 150 {provider: principal, rate: {rate: uint, timestamp: uint}})))
-  (let ((sorted-rates (sort rate-value-comparator (map get-rate-value rates))))
-    (unwrap-panic (element-at sorted-rates (/ (len sorted-rates) u2)))))
+(define-private (get-valid-rates (provider principal) (rate {rate: uint, timestamp: uint}) (valid-rates (list 150 uint)))
+  (if (is-valid-rate rate)
+    (unwrap-panic (as-max-len? (append valid-rates (get rate rate)) u150))
+    valid-rates))
 
-(define-private (get-rate-value (rate {provider: principal, rate: {rate: uint, timestamp: uint}}))
-  (get rate (get rate rate)))
+(define-private (get-median-rate (rates (list 150 uint)))
+  (let
+    (
+      (sorted-rates (fold sort-rates rates (list)))
+      (mid-index (/ (len sorted-rates) u2))
+    )
+    (unwrap-panic (element-at sorted-rates mid-index))))
 
-(define-private (rate-value-comparator (a uint) (b uint))
-  (< a b))
+(define-private (sort-rates (rate uint) (sorted-rates (list 150 uint)))
+  (fold insert-rate sorted-rates (list rate)))
+
+(define-private (insert-rate (rate uint) (sorted-rates (list 150 uint)))
+  (let ((index (find-index rate sorted-rates)))
+    (unwrap-panic (as-max-len? (concat (take index sorted-rates) (list rate) (drop index sorted-rates)) u150))))
+
+(define-private (find-index (rate uint) (rates (list 150 uint)))
+  (default-to (len rates) (index-of rates rate)))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
