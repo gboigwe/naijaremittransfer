@@ -1,6 +1,6 @@
-;; Naija Transfer - Decentralized Remittance Smart Contract
+;; Naija Transfer - Decentralized Remittance Smart Contract (Clarity 2.0)
 
-;; Define constants
+;; Constants
 (define-constant contract-owner tx-sender)
 (define-constant err-owner-only (err u100))
 (define-constant err-insufficient-balance (err u101))
@@ -9,15 +9,14 @@
 (define-constant err-invalid-rate (err u104))
 (define-constant err-not-authorized (err u105))
 (define-constant err-empty-rates (err u106))
-(define-constant err-rate-not-found (err u107))
 
-;; Define data variables
+;; Data variables
 (define-data-var transfer-fee uint u100) ;; 1% transfer fee (in basis points)
 (define-data-var min-rate-providers uint u3) ;; Minimum number of rate providers required
 (define-data-var rate-validity-period uint u3600) ;; Validity period for submitted rates (in seconds)
 (define-data-var current-exchange-rate uint u0) ;; Current exchange rate, updated on each submission
 
-;; Define maps
+;; Maps
 (define-map balances principal uint)
 (define-map user-details 
   principal 
@@ -52,44 +51,38 @@
       (mid-index (/ len u2))
     )
     (asserts! (> len u0) err-empty-rates)
-    (match (element-at? rates mid-index)
-      mid-rate (ok mid-rate)
-      err-rate-not-found)))
+    (ok (element-at rates mid-index))))
 
-(define-private (filter-valid-rates (rates (list 150 {rate: uint, timestamp: uint})) (current-time uint))
-  (filter-rates-iter rates current-time (list)))
-
-(define-private (filter-rates-iter (rates (list 150 {rate: uint, timestamp: uint})) (current-time uint) (valid-rates (list 150 uint)))
-  (match (element-at? rates u0)
-    rate-entry (let ((time-diff (- current-time (get timestamp rate-entry))))
-                 (if (< time-diff (var-get rate-validity-period))
-                   (filter-rates-iter (unwrap! (as-max-len? (slice rates u1 (len rates)) u149) rates)
-                                      current-time
-                                      (unwrap! (as-max-len? (append valid-rates (get rate rate-entry)) u150) valid-rates))
-                   (filter-rates-iter (unwrap! (as-max-len? (slice rates u1 (len rates)) u149) rates)
-                                      current-time
-                                      valid-rates)))
-    valid-rates))
+(define-private (is-rate-valid (rate {rate: uint, timestamp: uint}))
+  (let 
+    (
+      (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
+      (time-diff (- current-time (get timestamp rate)))
+    )
+    (< time-diff (var-get rate-validity-period))))
 
 (define-private (get-valid-rates)
   (let
     (
-      (current-time (unwrap! (get-block-info? time (- block-height u1)) err-invalid-rate))
-      (all-rates (unwrap! (get-all-rates) err-invalid-rate))
+      (all-rates (unwrap-panic (get-all-rates)))
     )
-    (ok (filter-valid-rates all-rates current-time))))
+    (filter is-rate-valid all-rates)))
 
 (define-private (update-exchange-rate)
   (let
     (
-      (valid-rates (unwrap! (get-valid-rates) err-invalid-rate))
+      (valid-rates (get-valid-rates))
+      (rate-values (map get-rate-value valid-rates))
     )
-    (asserts! (>= (len valid-rates) (var-get min-rate-providers)) err-invalid-rate)
-    (match (calculate-median valid-rates)
-      median-rate (begin
-                    (var-set current-exchange-rate median-rate)
-                    (ok median-rate))
+    (asserts! (>= (len rate-values) (var-get min-rate-providers)) err-invalid-rate)
+    (match (calculate-median rate-values)
+      median (begin
+               (var-set current-exchange-rate median)
+               (ok median))
       error error)))
+
+(define-private (get-rate-value (rate {rate: uint, timestamp: uint}))
+  (get rate rate))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
@@ -112,23 +105,21 @@
     (asserts! (<= total-amount sender-balance) err-insufficient-balance)
     (asserts! (is-some (get-user-details recipient)) err-transfer-failed)
     (asserts! (> exchange-rate u0) err-invalid-rate)
-    (match (map-set balances tx-sender (- sender-balance total-amount))
-      success (match (map-set balances recipient (+ (get-balance recipient) amount-stx))
-                recipient-success (match (map-set balances contract-owner (+ (get-balance contract-owner) fee))
-                                    fee-success (ok naira-amount)
-                                    error err-transfer-failed)
-                error err-transfer-failed)
-      error err-insufficient-balance)))
+    (try! (as-contract (stx-transfer? amount-stx tx-sender recipient)))
+    (try! (as-contract (stx-transfer? fee tx-sender contract-owner)))
+    (map-set balances tx-sender (- sender-balance total-amount))
+    (ok naira-amount)))
 
 (define-public (withdraw (amount uint))
   (let ((current-balance (get-balance tx-sender)))
     (asserts! (<= amount current-balance) err-insufficient-balance)
+    (try! (as-contract (stx-transfer? amount contract-owner tx-sender)))
     (ok (map-set balances tx-sender (- current-balance amount)))))
 
 (define-public (submit-exchange-rate (rate uint))
   (begin
     (asserts! (is-rate-provider tx-sender) err-not-authorized)
-    (let ((current-time (unwrap! (get-block-info? time (- block-height u1)) err-invalid-rate)))
+    (let ((current-time (unwrap-panic (get-block-info? time (- block-height u1)))))
       (map-set exchange-rates tx-sender {rate: rate, timestamp: current-time})
       (update-exchange-rate))))
 
@@ -162,31 +153,10 @@
 
 ;; Utility functions
 (define-read-only (get-all-providers)
-  (ok (get-providers-iter (list))))
-
-(define-private (get-providers-iter (acc (list 150 principal)))
-  (let ((next-provider (next-rate-provider acc)))
-    (if (is-some next-provider)
-      (get-providers-iter (unwrap! (as-max-len? (append acc next-provider) u150) acc))
-      acc)))
+  (ok (filter is-rate-provider (get-all-principals))))
 
 (define-read-only (get-all-rates)
-  (ok (get-rates-iter (list))))
+  (ok (map get-provider-rate (filter is-rate-provider (get-all-principals)))))
 
-(define-private (get-rates-iter (acc (list 150 {rate: uint, timestamp: uint})))
-  (let ((next-provider (next-rate-provider (map get key acc))))
-    (if (is-some next-provider)
-      (match (get-provider-rate (unwrap-panic next-provider))
-        rate (get-rates-iter (unwrap! (as-max-len? (append acc rate) u150) acc))
-        (get-rates-iter acc))
-      acc)))
-
-(define-private (next-rate-provider (excluded (list 150 principal)))
-  (find-provider rate-providers excluded))
-
-(define-private (find-provider (providers (map principal bool)) (excluded (list 150 principal)))
-  (match (map-get? providers (unwrap! (element-at? excluded u0) none))
-    value (some (unwrap! (element-at? excluded u0) none))
-    (if (> (len excluded) u1)
-      (find-provider providers (unwrap! (as-max-len? (slice excluded u1 (len excluded)) u149) excluded))
-      none)))
+(define-read-only (get-all-principals)
+  (ok (append (list contract-owner) (list tx-sender))))
