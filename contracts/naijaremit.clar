@@ -39,7 +39,7 @@
   (map-get? exchange-rates provider))
 
 (define-read-only (get-current-exchange-rate)
-  (let ((valid-rates (fold get-valid-rates exchange-rates (list))))
+  (let ((valid-rates (get-valid-rates)))
     (if (>= (len valid-rates) (var-get min-rate-providers))
       (ok (get-median-rate valid-rates))
       (err err-invalid-rate))))
@@ -49,31 +49,32 @@
   (let ((current-time (unwrap-panic (get-block-info? time (- block-height u1)))))
     (< (- current-time (get timestamp rate)) (var-get rate-validity-period))))
 
-(define-private (get-valid-rates (provider principal) (rate {rate: uint, timestamp: uint}) (valid-rates (list 150 uint)))
-  (if (is-valid-rate rate)
-    (unwrap-panic (as-max-len? (append valid-rates (get rate rate)) u150))
-    valid-rates))
+(define-private (get-valid-rates)
+  (filter is-valid-rate (map get-rate-data (keys exchange-rates))))
 
-(define-private (get-median-rate (rates (list 150 uint)))
+(define-private (get-rate-data (provider principal))
+  (unwrap-panic (map-get? exchange-rates provider)))
+
+(define-private (get-median-rate (rates (list 150 {rate: uint, timestamp: uint})))
   (let
     (
       (sorted-rates (fold sort-rates rates (list)))
       (mid-index (/ (len sorted-rates) u2))
     )
-    (unwrap-panic (element-at sorted-rates mid-index))))
+    (get rate (unwrap-panic (element-at sorted-rates mid-index)))))
 
-(define-private (sort-rates (rate uint) (sorted-rates (list 150 uint)))
+(define-private (sort-rates (rate {rate: uint, timestamp: uint}) (sorted-rates (list 150 {rate: uint, timestamp: uint})))
   (insert-rate rate sorted-rates))
 
-(define-private (insert-rate (rate uint) (sorted-rates (list 150 uint)))
+(define-private (insert-rate (rate {rate: uint, timestamp: uint}) (sorted-rates (list 150 {rate: uint, timestamp: uint})))
   (fold insert-helper sorted-rates (list rate)))
 
-(define-private (insert-helper (current uint) (acc (list 150 uint)))
-  (if (and (> (len acc) u0) (< current (unwrap-panic (element-at acc u0))))
+(define-private (insert-helper (current {rate: uint, timestamp: uint}) (acc (list 150 {rate: uint, timestamp: uint})))
+  (if (and (> (len acc) u0) (< (get rate current) (get rate (unwrap-panic (element-at acc u0)))))
     (unwrap-panic (as-max-len? (concat (list current) acc) u150))
     (unwrap-panic (as-max-len? (append acc current) u150))))
 
-(define-private (element-at (l (list 150 uint)) (index uint))
+(define-private (element-at (l (list 150 {rate: uint, timestamp: uint})) (index uint))
   (ok (unwrap-panic (element-at? l index))))
 
 ;; Public functions
