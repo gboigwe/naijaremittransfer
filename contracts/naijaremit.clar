@@ -53,29 +53,8 @@
     )
     (asserts! (> len u0) err-empty-rates)
     (match (element-at? rates mid-index)
-      mid-rate (if (is-eq (mod len u2) u0)
-                   (match (element-at? rates (- mid-index u1))
-                     prev-rate (ok (/ (+ mid-rate prev-rate) u2))
-                     err-rate-not-found)
-                   (ok mid-rate))
+      mid-rate (ok mid-rate)
       err-rate-not-found)))
-
-(define-private (insert-sorted (rate uint) (rates (list 150 uint)))
-  (let ((len (len rates)))
-    (if (is-eq len u0)
-      (list rate)
-      (match (element-at? rates u0)
-        first-rate (if (< rate first-rate)
-                      (cons rate rates)
-                      (cons first-rate (insert-sorted rate (unwrap! (as-max-len? (slice rates u1 len) u149) rates))))
-        rates))))
-
-(define-private (sort-rates (rates (list 150 uint)))
-  (let ((sorted-rates (list)))
-    (asserts! (> (len rates) u0) err-empty-rates)
-    (ok (get sorted-rates 
-        (for-each rate (unwrap-panic (as-max-len? rates u150))
-          (map-set sorted-rates (insert-sorted rate sorted-rates) none))))))
 
 (define-private (filter-valid-rates (rates (list 150 {rate: uint, timestamp: uint})) (current-time uint))
   (let ((valid-rates (list)))
@@ -99,13 +78,11 @@
       (valid-rates (unwrap! (get-valid-rates) err-invalid-rate))
     )
     (asserts! (>= (len valid-rates) (var-get min-rate-providers)) err-invalid-rate)
-    (let
-      (
-        (sorted-rates (unwrap! (sort-rates valid-rates) err-invalid-rate))
-        (median-rate (unwrap! (calculate-median sorted-rates) err-invalid-rate))
-      )
-      (var-set current-exchange-rate median-rate)
-      (ok median-rate))))
+    (match (calculate-median valid-rates)
+      median-rate (begin
+                    (var-set current-exchange-rate median-rate)
+                    (ok median-rate))
+      error error)))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
@@ -164,7 +141,7 @@
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
     (map-delete rate-providers provider)
     (map-delete exchange-rates provider)
-    (update-exchange-rate)))
+    (ok true)))
 
 (define-public (set-min-rate-providers (new-min uint))
   (begin
