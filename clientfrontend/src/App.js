@@ -1,25 +1,24 @@
-import logo from './logo.svg';
-import './App.css';
+import React from 'react';
+import { Connect } from '@stacks/connect-react';
+import NaijaTransferApp from './components/NaijaTransferApp';
 
-function App() {
+const App = () => {
   return (
-    <div className="App">
-      <header className="App-header">
-        <img src={logo} className="App-logo" alt="logo" />
-        <p>
-          Edit <code>src/App.js</code> and save to reload.
-        </p>
-        <a
-          className="App-link"
-          href="https://reactjs.org"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          Learn React
-        </a>
-      </header>
-    </div>
+    <Connect
+      authOptions={{
+        appDetails: {
+          name: 'Naija Transfer',
+          icon: '/logo.png',
+        },
+        redirectTo: '/',
+        onFinish: () => {
+          window.location.reload();
+        },
+      }}
+    >
+      <NaijaTransferApp />
+    </Connect>
   );
-}
+};
 
 export default App;
