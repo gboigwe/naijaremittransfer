@@ -1,167 +1,107 @@
-;; Naija Transfer - Decentralized Remittance Smart Contract (Clarity 2.0)
+;; Naija Transfer - Decentralized Remittance System
+;; Built with Clarity 2.0 (Security Enhanced)
 
 ;; Constants
 (define-constant contract-owner tx-sender)
 (define-constant err-owner-only (err u100))
-(define-constant err-insufficient-balance (err u101))
-(define-constant err-invalid-amount (err u102))
-(define-constant err-transfer-failed (err u103))
-(define-constant err-invalid-rate (err u104))
-(define-constant err-not-authorized (err u105))
-(define-constant err-empty-rates (err u106))
-(define-constant err-no-rates (err u108))
+(define-constant err-not-registered (err u101))
+(define-constant err-insufficient-balance (err u102))
+(define-constant err-invalid-amount (err u103))
+(define-constant err-transfer-failed (err u104))
+(define-constant err-unauthorized (err u105))
+(define-constant err-invalid-exchange-rate (err u106))
+(define-constant err-already-registered (err u107))
+(define-constant err-invalid-input (err u108))
 
-;; Data variables
-(define-data-var transfer-fee uint u100) ;; 1% transfer fee (in basis points)
-(define-data-var min-rate-providers uint u3) ;; Minimum number of rate providers required
-(define-data-var rate-validity-period uint u3600) ;; Validity period for submitted rates (in seconds)
-(define-data-var current-exchange-rate uint u0) ;; Current exchange rate, updated on each submission
+;; Data Variables
+(define-data-var exchange-rate uint u0)
+(define-data-var fee-percentage uint u100) ;; 1% fee, represented in basis points
 
-;; Maps
-(define-map balances principal uint)
+;; Data Maps
+(define-map user-balances principal uint)
 (define-map user-details 
   principal 
-  {name: (string-ascii 50), 
-   nigeria-bank-account: (string-ascii 20)})
-(define-map rate-providers principal bool)
-(define-map exchange-rates 
-  principal 
-  {rate: uint, timestamp: uint})
+  { name: (string-ascii 50), 
+    bank-account: (string-ascii 20) })
+(define-map exchange-rate-providers principal bool)
 
-;; Read-only functions
+;; Read-only Functions
 (define-read-only (get-balance (user principal))
-  (default-to u0 (map-get? balances user)))
+  (default-to u0 (map-get? user-balances user)))
 
 (define-read-only (get-user-details (user principal))
   (map-get? user-details user))
 
-(define-read-only (is-rate-provider (provider principal))
-  (default-to false (map-get? rate-providers provider)))
+(define-read-only (get-exchange-rate)
+  (ok (var-get exchange-rate)))
 
-(define-read-only (get-provider-rate (provider principal))
-  (map-get? exchange-rates provider))
+(define-read-only (is-exchange-rate-provider (provider principal))
+  (default-to false (map-get? exchange-rate-providers provider)))
 
-(define-read-only (get-current-exchange-rate)
-  (ok (var-get current-exchange-rate)))
+;; Private Functions
+(define-private (validate-string (input (string-ascii 50)))
+  (and (> (len input) u0) (<= (len input) u50)))
 
-;; Private functions
-(define-private (calculate-median (rates (list 150 uint)))
-  (let
-    (
-      (len (len rates))
-      (mid-index (/ len u2))
-    )
-    (asserts! (> len u0) err-empty-rates)
-    (ok (element-at rates mid-index))))
+(define-private (validate-bank-account (account (string-ascii 20)))
+  (and (> (len account) u0) (<= (len account) u20)))
 
-(define-private (get-valid-rates)
-  (filter is-rate-valid (get-all-providers)))
-
-(define-private (get-rate-value (provider principal))
-  (match (map-get? exchange-rates provider)
-    rate-data (get rate rate-data)
-    u0))
-
-(define-private (update-exchange-rate)
-  (let
-    (
-      (valid-providers (get-valid-rates))
-      (rate-values (map get-rate-value valid-providers))
-    )
-    (asserts! (>= (len rate-values) (var-get min-rate-providers)) err-invalid-rate)
-    (match (calculate-median rate-values)
-      median-ok (match median-ok
-                  median (begin
-                           (var-set current-exchange-rate median)
-                           (ok median))
-                  err-empty-rates)
-      error error)))
-
-(define-private (is-rate-valid (provider principal))
-  (match (map-get? exchange-rates provider)
-    rate-data (let 
-                (
-                  (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
-                )
-                (<= (- current-time (get timestamp rate-data)) (var-get rate-validity-period)))
-    false))
-
-;; Public functions
+;; Public Functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
-  (ok (map-set user-details tx-sender {name: name, nigeria-bank-account: bank-account})))
+  (begin
+    (asserts! (is-none (get-user-details tx-sender)) err-already-registered)
+    (asserts! (validate-string name) err-invalid-input)
+    (asserts! (validate-bank-account bank-account) err-invalid-input)
+    (ok (map-set user-details tx-sender {name: name, bank-account: bank-account}))))
 
 (define-public (deposit (amount uint))
   (let ((current-balance (get-balance tx-sender)))
     (asserts! (> amount u0) err-invalid-amount)
-    (ok (map-set balances tx-sender (+ current-balance amount)))))
+    (ok (map-set user-balances tx-sender (+ current-balance amount)))))
 
-(define-public (send-remittance (recipient principal) (amount-stx uint))
-  (let 
+(define-public (send-remittance (recipient principal) (amount uint))
+  (let
     (
       (sender-balance (get-balance tx-sender))
-      (fee (/ (* amount-stx (var-get transfer-fee)) u10000))
-      (total-amount (+ amount-stx fee))
-      (exchange-rate (var-get current-exchange-rate))
-      (naira-amount (/ (* amount-stx exchange-rate) u10000))
+      (fee (/ (* amount (var-get fee-percentage)) u10000))
+      (total-amount (+ amount fee))
+      (current-exchange-rate (var-get exchange-rate))
     )
-    (asserts! (<= total-amount sender-balance) err-insufficient-balance)
-    (asserts! (is-some (get-user-details recipient)) err-transfer-failed)
-    (asserts! (> exchange-rate u0) err-invalid-rate)
-    (try! (as-contract (stx-transfer? amount-stx tx-sender recipient)))
-    (try! (as-contract (stx-transfer? fee tx-sender contract-owner)))
-    (map-set balances tx-sender (- sender-balance total-amount))
-    (ok naira-amount)))
+    (asserts! (is-some (get-user-details tx-sender)) err-not-registered)
+    (asserts! (is-some (get-user-details recipient)) err-not-registered)
+    (asserts! (>= sender-balance total-amount) err-insufficient-balance)
+    (asserts! (> current-exchange-rate u0) err-invalid-exchange-rate)
+    (try! (stx-transfer? amount tx-sender recipient))
+    (try! (stx-transfer? fee tx-sender contract-owner))
+    (map-set user-balances tx-sender (- sender-balance total-amount))
+    (ok (/ (* amount current-exchange-rate) u100000000)))) ;; Return Naira amount, assuming 8 decimal places
 
 (define-public (withdraw (amount uint))
   (let ((current-balance (get-balance tx-sender)))
-    (asserts! (<= amount current-balance) err-insufficient-balance)
+    (asserts! (>= current-balance amount) err-insufficient-balance)
     (try! (as-contract (stx-transfer? amount contract-owner tx-sender)))
-    (ok (map-set balances tx-sender (- current-balance amount)))))
+    (ok (map-set user-balances tx-sender (- current-balance amount)))))
 
-(define-public (submit-exchange-rate (rate uint))
+(define-public (set-exchange-rate (new-rate uint))
   (begin
-    (asserts! (is-rate-provider tx-sender) err-not-authorized)
-    (let ((current-time (get-block-info? time (- block-height u1))))
-      (match current-time
-        time (begin
-               (map-set exchange-rates tx-sender {rate: rate, timestamp: time})
-               (update-exchange-rate))
-        err-invalid-rate))))
+    (asserts! (is-exchange-rate-provider tx-sender) err-unauthorized)
+    (asserts! (> new-rate u0) err-invalid-exchange-rate)
+    (ok (var-set exchange-rate new-rate))))
 
-;; Admin functions
-(define-public (set-transfer-fee (new-fee uint))
+;; Admin Functions
+(define-public (set-fee-percentage (new-fee-percentage uint))
   (begin
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (ok (var-set transfer-fee new-fee))))
+    (asserts! (<= new-fee-percentage u10000) err-invalid-amount) ;; Ensure fee is not more than 100%
+    (ok (var-set fee-percentage new-fee-percentage))))
 
-(define-public (add-rate-provider (provider principal))
+(define-public (add-exchange-rate-provider (provider principal))
   (begin
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (ok (map-set rate-providers provider true))))
+    (asserts! (is-none (map-get? exchange-rate-providers provider)) err-invalid-input)
+    (ok (map-set exchange-rate-providers provider true))))
 
-(define-public (remove-rate-provider (provider principal))
+(define-public (remove-exchange-rate-provider (provider principal))
   (begin
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (map-delete rate-providers provider)
-    (map-delete exchange-rates provider)
-    (ok true)))
-
-(define-public (set-min-rate-providers (new-min uint))
-  (begin
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (ok (var-set min-rate-providers new-min))))
-
-(define-public (set-rate-validity-period (new-period uint))
-  (begin
-    (asserts! (is-eq tx-sender contract-owner) err-owner-only)
-    (ok (var-set rate-validity-period new-period))))
-
-;; Utility functions
-(define-read-only (get-all-providers)
-  (filter is-rate-provider (list contract-owner tx-sender)))
-
-(define-read-only (get-all-rates)
-  (map get-provider-rate (filter is-rate-provider (get-all-principals))))
-
-(define-read-only (get-all-principals)
-  (list contract-owner tx-sender))
+    (asserts! (is-some (map-get? exchange-rate-providers provider)) err-invalid-input)
+    (ok (map-delete exchange-rate-providers provider))))
