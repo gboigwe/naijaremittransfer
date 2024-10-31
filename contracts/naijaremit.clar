@@ -46,32 +46,46 @@
 (define-private (calculate-median (rates (list 150 uint)))
   (let
     (
-      (sorted-rates (sort < rates))
       (len (len rates))
       (mid-index (/ len u2))
+      (sorted-rates (fold less-than rates (list)))
     )
     (if (is-eq (mod len u2) u0)
-      (/ (+ (unwrap-panic (element-at sorted-rates mid-index))
-            (unwrap-panic (element-at sorted-rates (- mid-index u1))))
+      (/ (+ (unwrap-panic (element-at? sorted-rates mid-index))
+            (unwrap-panic (element-at? sorted-rates (- mid-index u1))))
          u2)
-      (unwrap-panic (element-at sorted-rates mid-index)))))
+      (unwrap-panic (element-at? sorted-rates mid-index)))))
+
+(define-private (less-than (rate uint) (acc (list 150 uint)))
+  (let ((insert-at (find-insert-index rate acc u0)))
+    (unwrap-panic (as-max-len? (concat (take insert-at acc) (append (list rate) (drop insert-at acc))) u150))))
+
+(define-private (find-insert-index (rate uint) (acc (list 150 uint)) (index uint))
+  (if (or (>= index (len acc)) (< rate (unwrap-panic (element-at? acc index))))
+    index
+    (find-insert-index rate acc (+ index u1))))
 
 (define-private (update-exchange-rate)
   (let
     (
       (current-time (unwrap-panic (get-block-info? time (- block-height u1))))
-      (valid-rates (filter
-        (lambda (rate)
-          (< (- current-time (get timestamp rate))
-             (var-get rate-validity-period)))
-        (map unwrap-panic (map get-provider-rate (map-to-list rate-providers)))))
+      (valid-rates (filter-valid-rates (map-to-list exchange-rates) current-time (list)))
     )
     (if (>= (len valid-rates) (var-get min-rate-providers))
       (let
-        ((median-rate (calculate-median (map get rate valid-rates))))
+        ((median-rate (calculate-median valid-rates)))
         (var-set current-exchange-rate median-rate)
         (ok median-rate))
       (err err-invalid-rate))))
+
+(define-private (filter-valid-rates (rates (list 150 {provider: principal, rate: {rate: uint, timestamp: uint}})) (current-time uint) (acc (list 150 uint)))
+  (match rates
+    rates-tail:rest
+    (let ((rate (get rate (get rate (unwrap! (element-at? rates u0) acc)))))
+      (if (< (- current-time (get timestamp (get rate (unwrap! (element-at? rates u0) acc)))) (var-get rate-validity-period))
+        (filter-valid-rates rates-tail current-time (unwrap! (as-max-len? (append acc rate) u150) acc))
+        (filter-valid-rates rates-tail current-time acc)))
+    acc))
 
 ;; Public functions
 (define-public (register-user (name (string-ascii 50)) (bank-account (string-ascii 20)))
