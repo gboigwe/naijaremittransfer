@@ -50,10 +50,14 @@
     (< (- current-time (get timestamp rate)) (var-get rate-validity-period))))
 
 (define-private (get-valid-rates)
-  (filter is-valid-rate (map get-rate-data (keys exchange-rates))))
+  (fold check-and-add-rate rate-providers (list)))
 
-(define-private (get-rate-data (provider principal))
-  (unwrap-panic (map-get? exchange-rates provider)))
+(define-private (check-and-add-rate (provider principal) (is-provider bool) (valid-rates (list 150 {rate: uint, timestamp: uint})))
+  (match (map-get? exchange-rates provider)
+    rate (if (and is-provider (is-valid-rate rate))
+           (unwrap-panic (as-max-len? (append valid-rates rate) u150))
+           valid-rates)
+    valid-rates))
 
 (define-private (get-median-rate (rates (list 150 {rate: uint, timestamp: uint})))
   (let
